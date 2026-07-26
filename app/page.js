@@ -13,19 +13,11 @@ const CURRENCY = process.env.META_CURRENCY || "USD";
 function getSupabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
   if (!url || !serviceRoleKey) {
-    throw new Error(
-      "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.",
-    );
+    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.");
   }
-
   return createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
 }
 
@@ -39,7 +31,6 @@ function expectedSessionToken() {
   const password = process.env.DASHBOARD_PASSWORD;
   const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!password || !secret) return "";
-
   return createHmac("sha256", secret)
     .update(`affiliate-capi-dashboard:${password}`)
     .digest("hex");
@@ -53,24 +44,20 @@ async function isAuthorized() {
 }
 
 async function requireAuthorization() {
-  if (!(await isAuthorized())) {
-    throw new Error("Unauthorized");
-  }
+  if (!(await isAuthorized())) throw new Error("Unauthorized");
 }
 
 function redirectWithNotice(message, tone = "success") {
   revalidatePath("/");
-  redirect(
-    `/?notice=${encodeURIComponent(message)}&tone=${encodeURIComponent(tone)}`,
-  );
+  redirect(`/?notice=${encodeURIComponent(message)}&tone=${encodeURIComponent(tone)}`);
 }
 
 function textValue(formData, name) {
   return String(formData.get(name) || "").trim();
 }
 
-function validateOfferId(value) {
-  return /^[A-Za-z0-9._:-]{1,128}$/.test(value);
+function validatePixelId(value) {
+  return /^[0-9]{1,32}$/.test(value);
 }
 
 function parsePayout(value) {
@@ -83,18 +70,14 @@ function parsePayout(value) {
 
 async function loginAction(formData) {
   "use server";
-
   const configuredPassword = process.env.DASHBOARD_PASSWORD;
   const suppliedPassword = textValue(formData, "password");
-
   if (!configuredPassword) {
     redirectWithNotice("Dashboard password is not configured.", "error");
   }
-
   if (!safeEqual(suppliedPassword, configuredPassword)) {
     redirect("/?login=failed");
   }
-
   const store = await cookies();
   store.set(SESSION_COOKIE, expectedSessionToken(), {
     httpOnly: true,
@@ -103,7 +86,6 @@ async function loginAction(formData) {
     path: "/",
     maxAge: 60 * 60 * 24 * 30,
   });
-
   redirect("/");
 }
 
@@ -116,97 +98,79 @@ async function logoutAction() {
 
 async function createConfig(formData) {
   "use server";
-
   try {
     await requireAuthorization();
-
-    const offerId = textValue(formData, "offer_id");
     const pixelId = textValue(formData, "pixel_id");
     const token = textValue(formData, "pixel_access_token");
+    const label = textValue(formData, "label");
     const payout = parsePayout(textValue(formData, "payout"));
-
-    if (!validateOfferId(offerId)) {
-      throw new Error("Offer ID contains unsupported characters.");
+    if (!validatePixelId(pixelId)) {
+      throw new Error("Pixel ID must be numeric.");
     }
-    if (!pixelId || !token) {
-      throw new Error("Pixel ID and access token are required.");
+    if (!token) {
+      throw new Error("Pixel access token is required.");
     }
-
     const supabase = getSupabaseAdmin();
     const { error } = await supabase.from("configs").insert({
-      offer_id: offerId,
       pixel_id: pixelId,
       pixel_access_token: token,
+      label: label || null,
       payout,
       active: true,
       updated_at: new Date().toISOString(),
     });
-
     if (error) throw error;
   } catch (error) {
-    redirectWithNotice(error.message || "Could not create offer.", "error");
+    redirectWithNotice(error.message || "Could not create config.", "error");
   }
-
-  redirectWithNotice("Offer created.");
+  redirectWithNotice("Config created.");
 }
 
 async function updateConfig(formData) {
   "use server";
-
   try {
     await requireAuthorization();
-
     const id = textValue(formData, "id");
-    const offerId = textValue(formData, "offer_id");
     const pixelId = textValue(formData, "pixel_id");
     const token = textValue(formData, "pixel_access_token");
+    const label = textValue(formData, "label");
     const payout = parsePayout(textValue(formData, "payout"));
-
-    if (!id || !validateOfferId(offerId) || !pixelId) {
-      throw new Error("Offer ID and pixel ID are required.");
+    if (!id || !validatePixelId(pixelId)) {
+      throw new Error("A numeric pixel ID is required.");
     }
-
     const update = {
-      offer_id: offerId,
       pixel_id: pixelId,
+      label: label || null,
       payout,
       updated_at: new Date().toISOString(),
     };
-
     if (token) update.pixel_access_token = token;
-
     const supabase = getSupabaseAdmin();
     const { error } = await supabase.from("configs").update(update).eq("id", id);
     if (error) throw error;
   } catch (error) {
-    redirectWithNotice(error.message || "Could not update offer.", "error");
+    redirectWithNotice(error.message || "Could not update config.", "error");
   }
-
-  redirectWithNotice("Offer updated.");
+  redirectWithNotice("Config updated.");
 }
 
 async function toggleConfig(formData) {
   "use server";
-
   try {
     await requireAuthorization();
-
     const id = textValue(formData, "id");
     const nextActive = textValue(formData, "next_active") === "true";
     if (!id) throw new Error("Missing config ID.");
-
     const supabase = getSupabaseAdmin();
     const { error } = await supabase
       .from("configs")
       .update({ active: nextActive, updated_at: new Date().toISOString() })
       .eq("id", id);
-
     if (error) throw error;
   } catch (error) {
     redirectWithNotice(error.message || "Could not change status.", "error");
   }
-
-  redirectWithNotice("Offer status updated.");
+  redirectWithNotice("Config status updated.");
 }
 
 async function deleteConfig(formData) {
@@ -219,9 +183,9 @@ async function deleteConfig(formData) {
     const { error } = await supabase.from("configs").delete().eq("id", id);
     if (error) throw error;
   } catch (error) {
-    redirectWithNotice(error.message || "Could not delete offer.", "error");
+    redirectWithNotice(error.message || "Could not delete config.", "error");
   }
-  redirectWithNotice("Offer routing deleted.");
+  redirectWithNotice("Config deleted.");
 }
 
 async function sendTestEvent(formData) {
@@ -231,17 +195,17 @@ async function sendTestEvent(formData) {
     const id = textValue(formData, "config_id");
     const testEventCode = textValue(formData, "test_event_code");
     const fbclid = textValue(formData, "fbclid");
-    const eventId = textValue(formData, "event_id") || `dashboard-test-${Date.now()}`;
-    if (!id || !testEventCode) throw new Error("Choose an offer routing and enter the Meta test event code.");
-
+    if (!id || !testEventCode) {
+      throw new Error("Choose a config and enter the Meta test event code.");
+    }
     const supabase = getSupabaseAdmin();
     const { data: config, error: configError } = await supabase
       .from("configs")
-      .select("offer_id,pixel_id,pixel_access_token,payout")
+      .select("pixel_id,pixel_access_token,payout,label")
       .eq("id", id)
       .maybeSingle();
     if (configError) throw configError;
-    if (!config) throw new Error("That offer routing no longer exists.");
+    if (!config) throw new Error("That config no longer exists.");
 
     const now = Date.now();
     const userData = fbclid
@@ -249,9 +213,8 @@ async function sendTestEvent(formData) {
       : { client_user_agent: "Affiliate Meta CAPI dashboard test event" };
     const payload = {
       data: [{
-        event_name: "Purchase",
+        event_name: "Lead",
         event_time: Math.floor(now / 1000),
-        event_id: eventId,
         action_source: "website",
         user_data: userData,
         custom_data: { currency: CURRENCY, value: Number(config.payout || 0) },
@@ -275,7 +238,7 @@ async function sendTestEvent(formData) {
     const accepted = Number(result.events_received || 0);
     if (accepted < 1) throw new Error("Meta responded successfully but did not accept an event.");
     const trace = result.fbtrace_id ? ` Trace: ${result.fbtrace_id}` : "";
-    redirectWithNotice(`Test Purchase accepted for ${config.offer_id} (${accepted} event).${trace}`);
+    redirectWithNotice(`Test Lead accepted for pixel ${config.pixel_id} (${accepted} event).${trace}`);
   } catch (error) {
     redirectWithNotice(error.message || "Could not send test event.", "error");
   }
@@ -290,112 +253,49 @@ function isMissingOptionalColumn(error) {
   );
 }
 
-function offerFromRawQuery(rawQuery) {
-  try {
-    return new URLSearchParams(rawQuery || "").get("offer_id") || "—";
-  } catch {
-    return "—";
-  }
-}
-
-async function loadLegacyCounts(supabase, configs) {
-  const counts = Object.fromEntries(configs.map((config) => [config.offer_id, 0]));
-  const pageSize = 1000;
-  let from = 0;
-
-  while (true) {
-    const { data, error } = await supabase
-      .from("events")
-      .select("raw_query")
-      .range(from, from + pageSize - 1);
-
-    if (error) throw error;
-
-    for (const event of data || []) {
-      const offerId = offerFromRawQuery(event.raw_query);
-      if (Object.prototype.hasOwnProperty.call(counts, offerId)) {
-        counts[offerId] += 1;
-      }
-    }
-
-    if (!data || data.length < pageSize) break;
-    from += pageSize;
-  }
-
-  return counts;
-}
-
 async function loadDashboardData() {
   const supabase = getSupabaseAdmin();
 
   const { data: configs, error: configsError } = await supabase
     .from("configs")
-    .select("id,offer_id,pixel_id,payout,active,created_at,updated_at")
+    .select("id,pixel_id,label,payout,active,created_at,updated_at")
     .order("created_at", { ascending: true });
-
   if (configsError) throw configsError;
 
   let eventsResult = await supabase
     .from("events")
-    .select("id,raw_query,offer_id,status,created_at,meta_http_status,meta_events_received,meta_trace_id,meta_response")
+    .select("id,raw_query,pixel_id,status,created_at,meta_http_status,meta_events_received,meta_trace_id,meta_response,forwarded_value,payout_source")
     .order("created_at", { ascending: false })
     .limit(60);
 
-  let hasEnhancedEvents = true;
-  let hasMetaDiagnostics = true;
-
   if (eventsResult.error && isMissingOptionalColumn(eventsResult.error)) {
-    hasMetaDiagnostics = false;
     eventsResult = await supabase
       .from("events")
-      .select("id,raw_query,offer_id,status,created_at")
+      .select("id,raw_query,pixel_id,status,created_at,meta_http_status,meta_events_received,meta_trace_id,meta_response")
       .order("created_at", { ascending: false })
       .limit(60);
   }
-
-  if (eventsResult.error && isMissingOptionalColumn(eventsResult.error)) {
-    hasEnhancedEvents = false;
-    eventsResult = await supabase
-      .from("events")
-      .select("id,raw_query,created_at")
-      .order("created_at", { ascending: false })
-      .limit(60);
-  }
-
   if (eventsResult.error) throw eventsResult.error;
 
-  let counts;
-  if (hasEnhancedEvents) {
-    const countResults = await Promise.all(
-      (configs || []).map(async (config) => {
-        const { count, error } = await supabase
-          .from("events")
-          .select("id", { count: "exact", head: true })
-          .eq("offer_id", config.offer_id)
-          .eq("status", "sent");
-
-        if (error) throw error;
-        return [config.offer_id, count || 0];
-      }),
-    );
-    counts = Object.fromEntries(countResults);
-  } else {
-    counts = await loadLegacyCounts(supabase, configs || []);
-  }
+  const counts = {};
+  await Promise.all(
+    (configs || []).map(async (config) => {
+      const { count, error } = await supabase
+        .from("events")
+        .select("id", { count: "exact", head: true })
+        .eq("pixel_id", config.pixel_id)
+        .eq("status", "sent");
+      if (error) throw error;
+      counts[config.pixel_id] = count || 0;
+    }),
+  );
 
   const events = (eventsResult.data || []).map((event) => ({
     ...event,
-    offer_id: event.offer_id || offerFromRawQuery(event.raw_query),
     status: event.status || "received",
   }));
 
-  return {
-    configs: configs || [],
-    events,
-    counts,
-    hasEnhancedEvents,
-    hasMetaDiagnostics,
-  };
+  return { configs: configs || [], events, counts };
 }
 
 function money(value) {
@@ -407,14 +307,25 @@ function money(value) {
 }
 
 function dateTime(value) {
-  if (!value) return "—";
+  if (!value) return "--";
   return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit",
   }).format(new Date(value));
+}
+
+// Pretty-print a raw query string into aligned key = value lines.
+function decodeRawQuery(rawQuery) {
+  if (!rawQuery) return "(empty query)";
+  try {
+    const params = new URLSearchParams(rawQuery);
+    const lines = [];
+    for (const [key, value] of params.entries()) {
+      lines.push(`${key} = ${value}`);
+    }
+    return lines.length ? lines.join("\n") : "(no parameters)";
+  } catch {
+    return rawQuery;
+  }
 }
 
 function StatusPill({ status }) {
@@ -434,27 +345,19 @@ function LoginScreen({ failed }) {
   return (
     <main className="auth-shell">
       <section className="auth-card rise">
-        <div className="brand-mark">A→M</div>
-        <p className="eyebrow">Affiliate → Meta CAPI</p>
+        <div className="brand-mark">A&rarr;M</div>
+        <p className="eyebrow">Affiliate &rarr; Meta CAPI</p>
         <h1>Private dashboard</h1>
         <p className="muted auth-copy">
           Enter the password set in <code>DASHBOARD_PASSWORD</code> to continue.
         </p>
-        {failed ? <div className="notice error">That password didn’t match. Try again.</div> : null}
+        {failed ? <div className="notice error">That password did not match. Try again.</div> : null}
         <form action={loginAction} className="stack-form">
           <label>
             <span>Password</span>
-            <input
-              autoFocus
-              type="password"
-              name="password"
-              autoComplete="current-password"
-              required
-            />
+            <input autoFocus type="password" name="password" autoComplete="current-password" required />
           </label>
-          <button className="button primary block" type="submit">
-            Open dashboard
-          </button>
+          <button className="button primary block" type="submit">Open dashboard</button>
         </form>
       </section>
       <style dangerouslySetInnerHTML={{ __html: styles }} />
@@ -465,75 +368,62 @@ function LoginScreen({ failed }) {
 export default async function Dashboard({ searchParams }) {
   const params = (await searchParams) || {};
   const authorized = await isAuthorized();
-
   if (!authorized) {
     return <LoginScreen failed={params.login === "failed"} />;
   }
 
   let data;
   let setupError = "";
-
   try {
     data = await loadDashboardData();
   } catch (error) {
     setupError = error.message || "Could not load Supabase data.";
-    data = { configs: [], events: [], counts: {}, hasEnhancedEvents: false, hasMetaDiagnostics: false };
+    data = { configs: [], events: [], counts: {} };
   }
 
   const headerStore = await headers();
-  const host =
-    headerStore.get("x-forwarded-host") || headerStore.get("host") || "localhost:3000";
+  const host = headerStore.get("x-forwarded-host") || headerStore.get("host") || "localhost:3000";
   const protocol = headerStore.get("x-forwarded-proto") || "http";
   const endpoint = `${protocol}://${host}/api/postback`;
 
-  const totalPostbacks = Object.values(data.counts).reduce(
-    (sum, count) => sum + count,
-    0,
-  );
-  const activeOffers = data.configs.filter((config) => config.active).length;
+  // Per-config copyable postback URL template.
+  const templateFor = (pixelId) =>
+    `${endpoint}?pixel_id=${pixelId}&source={source}&payout={payout}`;
+
+  const totalPostbacks = Object.values(data.counts).reduce((sum, c) => sum + c, 0);
+  const activeConfigs = data.configs.filter((c) => c.active).length;
   const notice = typeof params.notice === "string" ? params.notice : "";
   const noticeTone = params.tone === "error" ? "error" : "success";
   const dashboardProtected = Boolean(process.env.DASHBOARD_PASSWORD);
-  const conversionLabel = data.hasEnhancedEvents
-    ? "conversions forwarded to Meta"
-    : "postbacks received";
 
   return (
     <div className="app">
-      {/* ---------------- Left rail ---------------- */}
       <aside className="rail">
         <div className="rail-top">
           <div className="brand-lockup">
-            <div className="brand-mark">A→M</div>
+            <div className="brand-mark">A&rarr;M</div>
             <div>
               <p className="eyebrow">Server-side</p>
-              <strong className="brand-name">Affiliate → Meta</strong>
+              <strong className="brand-name">Affiliate &rarr; Meta</strong>
             </div>
           </div>
-
           <nav className="rail-nav">
             <a href="#overview"><span>Overview</span><em>{totalPostbacks.toLocaleString("en-US")}</em></a>
-            <a href="#offers"><span>Offers</span><em>{data.configs.length.toLocaleString("en-US")}</em></a>
+            <a href="#pixels"><span>Pixels</span><em>{data.configs.length.toLocaleString("en-US")}</em></a>
             <a href="#test-event"><span>Test event</span><em>Meta</em></a>
             <a href="#log"><span>Live log</span><em>{data.events.length.toLocaleString("en-US")}</em></a>
           </nav>
-
           <div className="rail-endpoint">
-            <p className="eyebrow">Postback URL</p>
+            <p className="eyebrow">Base endpoint</p>
             <code className="endpoint-code">{endpoint}</code>
-            <button className="button secondary block copy-button" data-copy={endpoint} type="button">
-              Copy endpoint
-            </button>
-            <p className="hint">
-              Append <code>?source=&lt;fbclid&gt;&amp;offer_id=…&amp;transaction_id=…</code>
-            </p>
+            <button className="button secondary block" data-copy={endpoint} type="button">Copy base</button>
+            <p className="hint">Grab a full per-pixel URL from each pixel below.</p>
           </div>
         </div>
-
         <div className="rail-foot">
           <span className={`live-tag ${setupError ? "down" : "up"}`}>
             <i className="pulse" />
-            {setupError ? "Supabase unreachable" : "Connected · RLS on"}
+            {setupError ? "Supabase unreachable" : "Connected"}
           </span>
           {dashboardProtected ? (
             <form action={logoutAction}>
@@ -543,7 +433,6 @@ export default async function Dashboard({ searchParams }) {
         </div>
       </aside>
 
-      {/* ---------------- Main column ---------------- */}
       <main className="main">
         <header className="page-head rise">
           <div>
@@ -555,18 +444,14 @@ export default async function Dashboard({ searchParams }) {
           </div>
         </header>
 
-        {notice ? (
-          <div className={`notice ${noticeTone} rise`} role="status">{notice}</div>
-        ) : null}
+        {notice ? <div className={`notice ${noticeTone} rise`} role="status">{notice}</div> : null}
 
         {setupError ? (
           <section className="critical-card rise">
             <p className="eyebrow">Setup required</p>
-            <h2>Supabase isn’t ready yet</h2>
+            <h2>Supabase is not ready yet</h2>
             <p className="muted">{setupError}</p>
-            <p className="muted">
-              Add the service-role key, run <code>schema.sql</code>, then refresh.
-            </p>
+            <p className="muted">Add the service-role key, run the schema, then refresh.</p>
           </section>
         ) : null}
 
@@ -577,36 +462,32 @@ export default async function Dashboard({ searchParams }) {
           </div>
         ) : null}
 
-        {/* ---------- Hero pulse ---------- */}
         <section id="overview" className="hero rise">
           <div className="hero-primary">
-            <p className="eyebrow">{data.hasEnhancedEvents ? "Forwarded conversions" : "Total postbacks"}</p>
+            <p className="eyebrow">Forwarded conversions</p>
             <div className="hero-figure">
               <strong className="big-number" data-count={totalPostbacks}>
                 {totalPostbacks.toLocaleString("en-US")}
               </strong>
             </div>
-            <p className="muted hero-sub">{conversionLabel} across all offers</p>
+            <p className="muted hero-sub">Lead events accepted by Meta across all pixels</p>
           </div>
           <div className="hero-stats">
             <div className="stat">
-              <p className="eyebrow">Active offers</p>
-              <strong className="stat-number" data-count={activeOffers}>
-                {activeOffers.toLocaleString("en-US")}
+              <p className="eyebrow">Active pixels</p>
+              <strong className="stat-number" data-count={activeConfigs}>
+                {activeConfigs.toLocaleString("en-US")}
               </strong>
               <span className="muted">of {data.configs.length.toLocaleString("en-US")} configured</span>
             </div>
             <div className="stat">
-              <p className="eyebrow">Count mode</p>
-              <strong className="stat-word">{data.hasEnhancedEvents ? "Indexed" : "Parsed"}</strong>
-              <span className="muted">
-                {data.hasEnhancedEvents ? "exact, from status column" : "derived from raw queries"}
-              </span>
+              <p className="eyebrow">Event</p>
+              <strong className="stat-word">Lead</strong>
+              <span className="muted">action_source: website</span>
             </div>
           </div>
         </section>
 
-        {/* ---------- Per-offer cards ---------- */}
         {data.configs.length ? (
           <div className="offer-grid">
             {data.configs.map((config, index) => (
@@ -616,42 +497,38 @@ export default async function Dashboard({ searchParams }) {
                 key={config.id}
               >
                 <div className="offer-card-top">
-                  <span className="offer-id">{config.offer_id}</span>
+                  <span className="offer-id">{config.label || config.pixel_id}</span>
                   <span className={config.active ? "dot active" : "dot"} />
                 </div>
-                <strong className="offer-count" data-count={data.counts[config.offer_id] || 0}>
-                  {(data.counts[config.offer_id] || 0).toLocaleString("en-US")}
+                <strong className="offer-count" data-count={data.counts[config.pixel_id] || 0}>
+                  {(data.counts[config.pixel_id] || 0).toLocaleString("en-US")}
                 </strong>
-                <span className="muted offer-foot">{conversionLabel}</span>
+                <span className="muted offer-foot">conversions forwarded</span>
               </article>
             ))}
           </div>
         ) : (
           <div className="empty-state rise">
-            <strong>No offers yet</strong>
-            <span>Add your first offer to start routing conversions to Meta.</span>
+            <strong>No pixels yet</strong>
+            <span>Add your first pixel to start routing conversions to Meta.</span>
           </div>
         )}
 
-        {/* ---------- Offers table ---------- */}
-        <section id="offers" className="section-block">
+        <section id="pixels" className="section-block">
           <div className="section-heading rise">
             <div>
               <p className="eyebrow">Configuration</p>
-              <h2>Offer routing</h2>
+              <h2>Pixel routing</h2>
             </div>
-            <button className="button primary" type="button" data-open="dialog-add">
-              Add offer
-            </button>
+            <button className="button primary" type="button" data-open="dialog-add">Add pixel</button>
           </div>
-
           <div className="table-card rise">
             <div className="table-scroll">
               <table>
                 <thead>
                   <tr>
-                    <th>Offer</th>
-                    <th>Pixel</th>
+                    <th>Label</th>
+                    <th>Pixel ID</th>
                     <th>Payout</th>
                     <th>Status</th>
                     <th>Updated</th>
@@ -661,7 +538,7 @@ export default async function Dashboard({ searchParams }) {
                 <tbody>
                   {data.configs.map((config) => (
                     <tr key={config.id}>
-                      <td><strong className="mono">{config.offer_id}</strong></td>
+                      <td><strong>{config.label || <span className="muted">--</span>}</strong></td>
                       <td className="mono muted">{config.pixel_id}</td>
                       <td className="mono">{money(config.payout)}</td>
                       <td>
@@ -672,21 +549,14 @@ export default async function Dashboard({ searchParams }) {
                       <td className="muted nowrap">{dateTime(config.updated_at)}</td>
                       <td>
                         <div className="row-actions">
+                          <button className="text-button" type="button" data-open={`dialog-url-${config.id}`}>Postback URL</button>
                           <form action={toggleConfig}>
                             <input type="hidden" name="id" value={config.id} />
                             <input type="hidden" name="next_active" value={String(!config.active)} />
-                            <button className="text-button" type="submit">
-                              {config.active ? "Pause" : "Enable"}
-                            </button>
+                            <button className="text-button" type="submit">{config.active ? "Pause" : "Enable"}</button>
                           </form>
-                          <button
-                            className="text-button"
-                            type="button"
-                            data-open={`dialog-edit-${config.id}`}
-                          >
-                            Edit
-                          </button>
-                          <form action={deleteConfig} data-confirm={`Delete routing for ${config.offer_id}? This cannot be undone.`}>
+                          <button className="text-button" type="button" data-open={`dialog-edit-${config.id}`}>Edit</button>
+                          <form action={deleteConfig} data-confirm={`Delete routing for pixel ${config.pixel_id}? This cannot be undone.`}>
                             <input type="hidden" name="id" value={config.id} />
                             <button className="text-button danger" type="submit">Delete</button>
                           </form>
@@ -695,9 +565,7 @@ export default async function Dashboard({ searchParams }) {
                     </tr>
                   ))}
                   {!data.configs.length ? (
-                    <tr>
-                      <td colSpan="6" className="table-empty">No offers configured yet.</td>
-                    </tr>
+                    <tr><td colSpan="6" className="table-empty">No pixels configured yet.</td></tr>
                   ) : null}
                 </tbody>
               </table>
@@ -705,82 +573,76 @@ export default async function Dashboard({ searchParams }) {
           </div>
         </section>
 
-        {/* ---------- Meta test event ---------- */}
         <section id="test-event" className="section-block">
           <div className="section-heading rise">
             <div><p className="eyebrow">Meta diagnostics</p><h2>Test event</h2></div>
-            <span className="quiet-label">Conversions API / Purchase</span>
+            <span className="quiet-label">Conversions API / Lead</span>
           </div>
           <div className="test-card rise">
             <div className="test-copy">
               <span className="test-index">01</span>
               <div>
-                <h3>Send through an offer route</h3>
-                <p className="muted">Choose a routing configuration, then paste the code from Meta Events Manager's Test Events tab. The stored pixel ID, token, payout, and currency are used automatically.</p>
+                <h3>Send through a pixel route</h3>
+                <p className="muted">Choose a config, then paste the code from Meta Events Manager Test Events tab. The stored pixel ID, token, payout, and currency are used automatically.</p>
               </div>
             </div>
             <form action={sendTestEvent} className="test-form">
-              <label><span>Offer routing</span><select name="config_id" required defaultValue="">
-                <option value="" disabled>Select an offer</option>
-                {data.configs.map((config) => <option value={config.id} key={`test-${config.id}`}>{config.offer_id} - Pixel {config.pixel_id}</option>)}
+              <label><span>Pixel config</span><select name="config_id" required defaultValue="">
+                <option value="" disabled>Select a pixel</option>
+                {data.configs.map((config) => (
+                  <option value={config.id} key={`test-${config.id}`}>
+                    {(config.label ? config.label + " - " : "") + "Pixel " + config.pixel_id}
+                  </option>
+                ))}
               </select></label>
               <label><span>Meta test event code</span><input name="test_event_code" placeholder="TEST12345" autoComplete="off" required /></label>
-              <label><span>fbclid <em>optional</em></span><input name="fbclid" placeholder="Paste a real click ID when available" autoComplete="off" /></label>
-              <label><span>Event ID <em>optional</em></span><input name="event_id" placeholder="Generated automatically" autoComplete="off" /></label>
+              <label className="wide-field"><span>fbclid <em>optional</em></span><input name="fbclid" placeholder="Paste a real click ID when available" autoComplete="off" /></label>
               <div className="test-submit">
-                <p className="hint">Marked as a test event so it appears in Meta's Test Events view.</p>
+                <p className="hint">Marked as a test event so it appears in Meta Test Events view.</p>
                 <button className="button primary" type="submit" disabled={!data.configs.length}>Send test event</button>
               </div>
             </form>
           </div>
         </section>
 
-        {/* ---------- Live log ---------- */}
         <section id="log" className="section-block">
           <div className="section-heading rise">
-            <div>
-              <p className="eyebrow">Live intake</p>
-              <h2>Raw request log</h2>
-            </div>
-            <span className="quiet-label">Newest first · 60 rows</span>
+            <div><p className="eyebrow">Live intake</p><h2>Raw request log</h2></div>
+            <span className="quiet-label">Newest first &middot; 60 rows</span>
           </div>
-
           <div className="table-card log-card rise">
             <div className="table-scroll">
               <table>
                 <thead>
                   <tr>
                     <th>Received</th>
-                    <th>Offer</th>
+                    <th>Pixel</th>
                     <th>Status</th>
-                    <th>Meta response</th>
-                    <th>Raw query</th>
+                    <th>Value</th>
+                    <th className="align-right">Inspect</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.events.map((event, index) => (
-                    <tr
-                      key={event.id || `${event.created_at}-${index}`}
-                      className="log-row"
-                      style={{ animationDelay: `${Math.min(index * 16, 220)}ms` }}
-                    >
+                    <tr key={event.id || `${event.created_at}-${index}`} className="log-row" style={{ animationDelay: `${Math.min(index * 16, 220)}ms` }}>
                       <td className="nowrap muted mono">{dateTime(event.created_at)}</td>
-                      <td><strong className="mono">{event.offer_id}</strong></td>
+                      <td className="mono">{event.pixel_id || <span className="muted">--</span>}</td>
                       <td><StatusPill status={event.status} /></td>
-                      <td>
-                        {event.meta_response || event.status === "failed" ? (
-                          <button className="text-button meta-view" type="button" data-open={`dialog-meta-${event.id}`}>
-                            {event.status === "failed" ? "View reason" : `View: ${event.meta_events_received ?? 0} accepted`}
-                          </button>
+                      <td className="mono">
+                        {event.forwarded_value != null ? (
+                          <>{money(event.forwarded_value)}{event.payout_source === "postback" ? <span className="tag-src">net</span> : null}</>
                         ) : <span className="muted">--</span>}
                       </td>
-                      <td><code className="raw-query">{event.raw_query || "(empty query)"}</code></td>
+                      <td>
+                        <div className="row-actions">
+                          <button className="text-button" type="button" data-open={`dialog-raw-${event.id}`}>Raw request</button>
+                          <button className="text-button" type="button" data-open={`dialog-meta-${event.id}`}>Response</button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                   {!data.events.length ? (
-                    <tr>
-                      <td colSpan="5" className="table-empty">No postbacks received yet.</td>
-                    </tr>
+                    <tr><td colSpan="5" className="table-empty">No postbacks received yet.</td></tr>
                   ) : null}
                 </tbody>
               </table>
@@ -789,85 +651,45 @@ export default async function Dashboard({ searchParams }) {
         </section>
 
         <footer>
-          <span>Affiliate → Meta CAPI forwarder</span>
-          <span>Server-only secrets · Supabase RLS enabled</span>
+          <span>Affiliate &rarr; Meta CAPI forwarder</span>
+          <span>Server-only secrets</span>
         </footer>
       </main>
 
-      {/* ---------------- Dialogs (top layer — no stacking traps) ---------------- */}
+      {/* Add pixel */}
       <dialog id="dialog-add" className="dialog">
         <div className="dialog-inner">
           <div className="dialog-head">
-            <div>
-              <p className="eyebrow">New offer</p>
-              <h3>Route an offer to Meta</h3>
-            </div>
-            <button className="icon-button" type="button" data-close aria-label="Close">✕</button>
+            <div><p className="eyebrow">New pixel</p><h3>Route a pixel to Meta</h3></div>
+            <button className="icon-button" type="button" data-close aria-label="Close">&times;</button>
           </div>
           <form action={createConfig} className="form-grid">
-            <label>
-              <span>Offer ID</span>
-              <input name="offer_id" placeholder="91872" required />
-            </label>
-            <label>
-              <span>Pixel / dataset ID</span>
-              <input name="pixel_id" inputMode="numeric" required />
-            </label>
-            <label className="wide-field">
-              <span>Pixel access token</span>
-              <input type="password" name="pixel_access_token" required />
-            </label>
-            <label>
-              <span>Default payout</span>
-              <input name="payout" type="number" min="0" step="0.01" defaultValue="0" required />
-            </label>
+            <label><span>Label <em>optional</em></span><input name="label" placeholder="e.g. Sweeps offer" autoComplete="off" /></label>
+            <label><span>Pixel / dataset ID</span><input name="pixel_id" inputMode="numeric" placeholder="1234567890" required /></label>
+            <label className="wide-field"><span>Pixel access token</span><input type="password" name="pixel_access_token" required /></label>
+            <label><span>Default payout</span><input name="payout" type="number" min="0" step="0.01" defaultValue="0" required /></label>
             <div className="form-actions wide-field">
               <button className="button ghost" type="button" data-close>Cancel</button>
-              <button className="button primary" type="submit">Create offer</button>
+              <button className="button primary" type="submit">Create pixel</button>
             </div>
           </form>
         </div>
       </dialog>
 
+      {/* Edit pixel */}
       {data.configs.map((config) => (
         <dialog id={`dialog-edit-${config.id}`} className="dialog" key={`edit-${config.id}`}>
           <div className="dialog-inner">
             <div className="dialog-head">
-              <div>
-                <p className="eyebrow">Edit offer</p>
-                <h3 className="mono">{config.offer_id}</h3>
-              </div>
-              <button className="icon-button" type="button" data-close aria-label="Close">✕</button>
+              <div><p className="eyebrow">Edit pixel</p><h3 className="mono">{config.pixel_id}</h3></div>
+              <button className="icon-button" type="button" data-close aria-label="Close">&times;</button>
             </div>
             <form action={updateConfig} className="form-grid">
               <input type="hidden" name="id" value={config.id} />
-              <label>
-                <span>Offer ID</span>
-                <input name="offer_id" defaultValue={config.offer_id} required />
-              </label>
-              <label>
-                <span>Pixel / dataset ID</span>
-                <input name="pixel_id" defaultValue={config.pixel_id} required />
-              </label>
-              <label className="wide-field">
-                <span>New token</span>
-                <input
-                  type="password"
-                  name="pixel_access_token"
-                  placeholder="Leave blank to keep current"
-                />
-              </label>
-              <label>
-                <span>Default payout</span>
-                <input
-                  name="payout"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  defaultValue={config.payout}
-                  required
-                />
-              </label>
+              <label><span>Label <em>optional</em></span><input name="label" defaultValue={config.label || ""} autoComplete="off" /></label>
+              <label><span>Pixel / dataset ID</span><input name="pixel_id" defaultValue={config.pixel_id} required /></label>
+              <label className="wide-field"><span>New token</span><input type="password" name="pixel_access_token" placeholder="Leave blank to keep current" /></label>
+              <label><span>Default payout</span><input name="payout" type="number" min="0" step="0.01" defaultValue={config.payout} required /></label>
               <div className="form-actions wide-field">
                 <button className="button ghost" type="button" data-close>Cancel</button>
                 <button className="button primary" type="submit">Save changes</button>
@@ -877,7 +699,48 @@ export default async function Dashboard({ searchParams }) {
         </dialog>
       ))}
 
-      {data.events.filter((event) => event.meta_response || event.status === "failed").map((event) => (
+      {/* Per-pixel postback URL */}
+      {data.configs.map((config) => (
+        <dialog id={`dialog-url-${config.id}`} className="dialog" key={`url-${config.id}`}>
+          <div className="dialog-inner">
+            <div className="dialog-head">
+              <div><p className="eyebrow">Postback URL</p><h3>Pixel {config.pixel_id}</h3></div>
+              <button className="icon-button" type="button" data-close aria-label="Close">&times;</button>
+            </div>
+            <p className="muted url-copy">Paste this into your affiliate network. Replace <code>{"{source}"}</code> and <code>{"{payout}"}</code> with the network macros for click ID and payout.</p>
+            <div className="url-box">
+              <code className="url-code">{templateFor(config.pixel_id)}</code>
+            </div>
+            <div className="form-actions">
+              <button className="button primary" type="button" data-copy={templateFor(config.pixel_id)}>Copy URL</button>
+            </div>
+          </div>
+        </dialog>
+      ))}
+
+      {/* Raw request */}
+      {data.events.map((event) => (
+        <dialog id={`dialog-raw-${event.id}`} className="dialog" key={`raw-${event.id}`}>
+          <div className="dialog-inner meta-dialog">
+            <div className="dialog-head">
+              <div><p className="eyebrow">Received postback</p><h3>Raw request</h3></div>
+              <button className="icon-button" type="button" data-close aria-label="Close">&times;</button>
+            </div>
+            <div className="meta-summary">
+              <div><span>Pixel</span><strong className="mono">{event.pixel_id || "--"}</strong></div>
+              <div><span>Status</span><strong className="mono">{event.status}</strong></div>
+              <div><span>Received</span><strong className="mono">{dateTime(event.created_at)}</strong></div>
+            </div>
+            <p className="block-label">Decoded parameters</p>
+            <pre className="response-json">{decodeRawQuery(event.raw_query)}</pre>
+            <p className="block-label">Full query string</p>
+            <pre className="response-json subtle">{event.raw_query || "(empty query)"}</pre>
+          </div>
+        </dialog>
+      ))}
+
+      {/* Meta response */}
+      {data.events.map((event) => (
         <dialog id={`dialog-meta-${event.id}`} className="dialog" key={`meta-${event.id}`}>
           <div className="dialog-inner meta-dialog">
             <div className="dialog-head">
@@ -885,22 +748,22 @@ export default async function Dashboard({ searchParams }) {
                 <p className="eyebrow">{event.status === "sent" ? "Meta acknowledgement" : "Delivery failed"}</p>
                 <h3>{event.status === "sent" ? "Forwarding response" : "Why this did not send"}</h3>
               </div>
-              <button className="icon-button" type="button" data-close aria-label="Close">x</button>
+              <button className="icon-button" type="button" data-close aria-label="Close">&times;</button>
             </div>
             {responseReason(event) ? (
-              <div className={`reason-banner ${event.status === "sent" ? "ok" : "bad"}`}>
-                {responseReason(event)}
-              </div>
+              <div className={`reason-banner ${event.status === "sent" ? "ok" : "bad"}`}>{responseReason(event)}</div>
             ) : null}
             <div className="meta-summary">
-              <div><span>Offer</span><strong className="mono">{event.offer_id}</strong></div>
+              <div><span>Pixel</span><strong className="mono">{event.pixel_id || "--"}</strong></div>
               <div><span>HTTP</span><strong className="mono">{event.meta_http_status ?? "--"}</strong></div>
               <div><span>Accepted</span><strong className="mono">{event.meta_events_received ?? 0}</strong></div>
             </div>
             {event.meta_trace_id ? <p className="meta-trace"><span>Trace ID</span><code>{event.meta_trace_id}</code></p> : null}
             {event.meta_response ? (
               <pre className="response-json">{JSON.stringify(event.meta_response, null, 2)}</pre>
-            ) : null}
+            ) : (
+              <p className="muted empty-response">No Meta response recorded for this event.</p>
+            )}
           </div>
         </dialog>
       ))}
@@ -913,8 +776,6 @@ export default async function Dashboard({ searchParams }) {
           __html: `
             (() => {
               const format = new Intl.NumberFormat('en-US');
-
-              // Animated counters
               document.querySelectorAll('[data-count]').forEach((node) => {
                 const key = 'count:' + (node.closest('.offer-card')?.querySelector('.offer-id')?.textContent || node.parentElement?.querySelector('p')?.textContent || 'metric');
                 const next = Number(node.dataset.count || 0);
@@ -931,8 +792,6 @@ export default async function Dashboard({ searchParams }) {
                 };
                 requestAnimationFrame(tick);
               });
-
-              // Copy buttons
               document.querySelectorAll('[data-copy]').forEach((button) => {
                 button.addEventListener('click', async () => {
                   try {
@@ -943,8 +802,6 @@ export default async function Dashboard({ searchParams }) {
                   } catch {}
                 });
               });
-
-              // Dialog open / close (native top layer — no z-index traps)
               document.querySelectorAll('[data-open]').forEach((button) => {
                 button.addEventListener('click', () => {
                   const dialog = document.getElementById(button.dataset.open);
@@ -955,20 +812,15 @@ export default async function Dashboard({ searchParams }) {
                 dialog.querySelectorAll('[data-close]').forEach((button) => {
                   button.addEventListener('click', () => dialog.close());
                 });
-                // click on backdrop closes
                 dialog.addEventListener('click', (event) => {
                   if (event.target === dialog) dialog.close();
                 });
               });
-
-              // Confirm destructive offer deletion
               document.querySelectorAll('form[data-confirm]').forEach((form) => {
                 form.addEventListener('submit', (event) => {
                   if (!window.confirm(form.dataset.confirm)) event.preventDefault();
                 });
               });
-
-              // Strip the notice query param after it's shown
               const cleanUrl = () => {
                 if (location.search.includes('notice=')) history.replaceState({}, '', '/');
               };
@@ -984,13 +836,8 @@ export default async function Dashboard({ searchParams }) {
 const styles = `
   :root {
     color-scheme: light dark;
-    --bg: #f6f6f4;
-    --surface: #ffffff;
-    --surface-2: #f1f1ef;
-    --ink: #0b0b0c;
-    --muted: #74747a;
-    --border: #e6e6e3;
-    --border-strong: #d3d3cf;
+    --bg: #f6f6f4; --surface: #ffffff; --surface-2: #f1f1ef;
+    --ink: #0b0b0c; --muted: #74747a; --border: #e6e6e3; --border-strong: #d3d3cf;
     --shadow-sm: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04);
     --shadow-lg: 0 24px 80px rgba(0,0,0,0.14);
     --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -999,128 +846,52 @@ const styles = `
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #08080a;
-      --surface: #101012;
-      --surface-2: #17171a;
-      --ink: #f4f4f5;
-      --muted: #8b8b92;
-      --border: #232327;
-      --border-strong: #313137;
-      --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
-      --shadow-lg: 0 28px 90px rgba(0,0,0,0.6);
+      --bg: #08080a; --surface: #101012; --surface-2: #17171a;
+      --ink: #f4f4f5; --muted: #8b8b92; --border: #232327; --border-strong: #313137;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.4); --shadow-lg: 0 28px 90px rgba(0,0,0,0.6);
     }
   }
-
   * { box-sizing: border-box; }
   html { background: var(--bg); scroll-behavior: smooth; }
   body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--ink);
+    margin: 0; background: var(--bg); color: var(--ink);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, "Segoe UI", sans-serif;
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
   }
   button, input, select { font: inherit; color: inherit; }
   button, summary, a { -webkit-tap-highlight-color: transparent; }
   a { color: inherit; }
   h1, h2, h3, p { margin: 0; }
   code, .mono { font-family: var(--mono); font-variant-ligatures: none; }
-
-  /* ---- Type scale ---- */
   h1 { font-size: clamp(30px, 3.4vw, 44px); line-height: 1.02; letter-spacing: -0.045em; font-weight: 680; }
   h2 { font-size: clamp(22px, 2.4vw, 30px); line-height: 1.06; letter-spacing: -0.035em; font-weight: 640; }
   h3 { font-size: 20px; letter-spacing: -0.02em; font-weight: 640; }
-  .eyebrow {
-    color: var(--muted); font-size: 11px; font-weight: 680;
-    letter-spacing: 0.14em; text-transform: uppercase;
-  }
+  .eyebrow { color: var(--muted); font-size: 11px; font-weight: 680; letter-spacing: 0.14em; text-transform: uppercase; }
   .muted { color: var(--muted); }
   .quiet-label { color: var(--muted); font-size: 13px; }
-  .big-number, .stat-number, .offer-count {
-    font-family: var(--mono); font-variant-numeric: tabular-nums;
-    letter-spacing: -0.04em; line-height: 0.92;
-  }
+  .big-number, .stat-number, .offer-count { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -0.04em; line-height: 0.92; }
 
-  /* ---- App shell ---- */
-  .app {
-    min-height: 100vh;
-    display: grid;
-    grid-template-columns: var(--rail-w) 1fr;
-  }
-
-  /* ---- Rail ---- */
-  .rail {
-    position: sticky; top: 0; align-self: start;
-    height: 100vh;
-    display: flex; flex-direction: column; justify-content: space-between; gap: 24px;
-    padding: 26px 22px;
-    background: var(--surface);
-    border-right: 1px solid var(--border);
-  }
+  .app { min-height: 100vh; display: grid; grid-template-columns: var(--rail-w) 1fr; }
+  .rail { position: sticky; top: 0; align-self: start; height: 100vh; display: flex; flex-direction: column; justify-content: space-between; gap: 24px; padding: 26px 22px; background: var(--surface); border-right: 1px solid var(--border); }
   .rail-top { display: flex; flex-direction: column; gap: 26px; min-height: 0; }
   .brand-lockup { display: flex; align-items: center; gap: 13px; }
-  .brand-mark {
-    display: grid; place-items: center;
-    width: 44px; height: 44px; border-radius: 13px;
-    background: var(--ink); color: var(--surface);
-    font-family: var(--mono); font-size: 13px; font-weight: 700; letter-spacing: -0.03em;
-    flex: none;
-  }
+  .brand-mark { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 13px; background: var(--ink); color: var(--surface); font-family: var(--mono); font-size: 13px; font-weight: 700; letter-spacing: -0.03em; flex: none; }
   .brand-name { font-size: 15px; letter-spacing: -0.02em; display: block; margin-top: 3px; }
-
   .rail-nav { display: flex; flex-direction: column; gap: 2px; }
-  .rail-nav a {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 12px; border-radius: 11px; text-decoration: none;
-    font-size: 14px; font-weight: 560;
-    transition: background 180ms var(--ease);
-  }
+  .rail-nav a { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 11px; text-decoration: none; font-size: 14px; font-weight: 560; transition: background 180ms var(--ease); }
   .rail-nav a:hover { background: var(--surface-2); }
-  .rail-nav em {
-    font-style: normal; font-family: var(--mono); font-size: 12px;
-    color: var(--muted); font-variant-numeric: tabular-nums;
-  }
-
-  .rail-endpoint {
-    display: flex; flex-direction: column; gap: 10px;
-    padding: 16px; border: 1px solid var(--border); border-radius: 16px;
-    background: var(--bg);
-  }
-  .endpoint-code {
-    font-size: 11.5px; line-height: 1.55; color: var(--ink);
-    overflow-wrap: anywhere; word-break: break-all;
-  }
+  .rail-nav em { font-style: normal; font-family: var(--mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .rail-endpoint { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--bg); }
+  .endpoint-code { font-size: 11.5px; line-height: 1.55; color: var(--ink); overflow-wrap: anywhere; word-break: break-all; }
   .rail-endpoint .hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
-  .rail-endpoint .hint code { font-size: 10.5px; overflow-wrap: anywhere; }
-
   .rail-foot { display: flex; flex-direction: column; gap: 12px; }
-  .live-tag {
-    display: inline-flex; align-items: center; gap: 8px;
-    font-size: 12px; font-weight: 560; color: var(--muted);
-  }
-  .live-tag .pulse {
-    width: 8px; height: 8px; border-radius: 50%; background: var(--ink);
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ink) 40%, transparent);
-    animation: pulse 2.4s var(--ease) infinite;
-  }
+  .live-tag { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 560; color: var(--muted); }
+  .live-tag .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 0 color-mix(in srgb, var(--ink) 40%, transparent); animation: pulse 2.4s var(--ease) infinite; }
   .live-tag.down .pulse { background: var(--muted); animation: none; }
-  @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ink) 34%, transparent); }
-    70% { box-shadow: 0 0 0 7px transparent; }
-    100% { box-shadow: 0 0 0 0 transparent; }
-  }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ink) 34%, transparent); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
 
-  /* ---- Buttons ---- */
-  .button, .text-button, .icon-button {
-    border: 0; cursor: pointer; text-decoration: none;
-    transition: transform 200ms var(--ease), background 200ms var(--ease), opacity 200ms var(--ease), border-color 200ms var(--ease);
-  }
-  .button {
-    min-height: 42px; display: inline-flex; align-items: center; justify-content: center;
-    padding: 0 18px; border-radius: 999px; font-weight: 620; font-size: 13.5px;
-    letter-spacing: -0.01em;
-  }
+  .button, .text-button, .icon-button { border: 0; cursor: pointer; text-decoration: none; transition: transform 200ms var(--ease), background 200ms var(--ease), opacity 200ms var(--ease), border-color 200ms var(--ease); }
+  .button { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; padding: 0 18px; border-radius: 999px; font-weight: 620; font-size: 13.5px; letter-spacing: -0.01em; }
   .button.block { width: 100%; }
   .button:hover { transform: translateY(-1px); }
   .button:active { transform: scale(0.985); }
@@ -1129,121 +900,63 @@ const styles = `
   .secondary:hover { border-color: var(--border-strong); }
   .ghost { background: transparent; color: var(--muted); }
   .ghost:hover { background: var(--surface-2); color: var(--ink); }
-  .text-button {
-    background: transparent; color: var(--ink);
-    padding: 7px 11px; border-radius: 9px; font-weight: 560; font-size: 13.5px;
-  }
+  .text-button { background: transparent; color: var(--ink); padding: 7px 11px; border-radius: 9px; font-weight: 560; font-size: 13.5px; }
   .text-button:hover { background: var(--surface-2); }
-  .icon-button {
-    width: 34px; height: 34px; border-radius: 10px; background: transparent;
-    color: var(--muted); font-size: 13px; display: grid; place-items: center;
-  }
+  .icon-button { width: 34px; height: 34px; border-radius: 10px; background: transparent; color: var(--muted); font-size: 15px; display: grid; place-items: center; }
   .icon-button:hover { background: var(--surface-2); color: var(--ink); }
   :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
 
-  /* ---- Main ---- */
-  .main {
-    padding: 34px clamp(22px, 3.4vw, 56px) 44px;
-    width: min(1240px, 100%);
-  }
+  .main { padding: 34px clamp(22px, 3.4vw, 56px) 44px; width: min(1240px, 100%); }
   .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
   .page-head .eyebrow { margin-bottom: 8px; }
   .head-actions { display: flex; align-items: center; gap: 14px; }
-
-  .notice, .security-warning {
-    margin-top: 22px; border: 1px solid var(--border); border-radius: 14px;
-    padding: 13px 16px; background: var(--surface); font-size: 14px;
-  }
+  .notice, .security-warning { margin-top: 22px; border: 1px solid var(--border); border-radius: 14px; padding: 13px 16px; background: var(--surface); font-size: 14px; }
   .notice.error, .security-warning { border-style: dashed; }
   .notice.success { font-weight: 560; }
   .security-warning code { font-size: 12.5px; }
-
-  .critical-card {
-    margin-top: 22px; padding: 26px; border: 1px dashed var(--border-strong);
-    border-radius: 20px; background: var(--surface);
-  }
+  .critical-card { margin-top: 22px; padding: 26px; border: 1px dashed var(--border-strong); border-radius: 20px; background: var(--surface); }
   .critical-card h2 { margin: 12px 0; }
   .critical-card p + p { margin-top: 8px; }
 
-  /* ---- Hero ---- */
-  .hero {
-    margin-top: 30px;
-    display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px;
-    padding: 32px; border: 1px solid var(--border); border-radius: 26px;
-    background:
-      radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--ink) 4%, transparent), transparent 55%),
-      var(--surface);
-    box-shadow: var(--shadow-sm);
-  }
+  .hero { margin-top: 30px; display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; padding: 32px; border: 1px solid var(--border); border-radius: 26px; background: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--ink) 4%, transparent), transparent 55%), var(--surface); box-shadow: var(--shadow-sm); }
   .hero-primary { display: flex; flex-direction: column; gap: 14px; }
   .hero-figure { display: flex; align-items: baseline; gap: 12px; }
   .big-number { font-size: clamp(64px, 9vw, 108px); font-weight: 620; }
   .hero-sub { font-size: 14px; }
-  .hero-stats {
-    display: grid; grid-template-rows: 1fr 1fr; gap: 14px;
-    padding-left: 24px; border-left: 1px solid var(--border);
-  }
+  .hero-stats { display: grid; grid-template-rows: 1fr 1fr; gap: 14px; padding-left: 24px; border-left: 1px solid var(--border); }
   .stat { display: flex; flex-direction: column; gap: 6px; }
   .stat .eyebrow { margin-bottom: 2px; }
   .stat-number { font-size: 40px; font-weight: 600; }
   .stat-word { font-size: 34px; letter-spacing: -0.03em; font-weight: 600; }
   .stat span { font-size: 13px; }
 
-  /* ---- Offer cards ---- */
-  .offer-grid {
-    margin-top: 16px; display: grid; gap: 12px;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-  .offer-card {
-    display: flex; flex-direction: column; justify-content: space-between; gap: 14px;
-    min-height: 132px; padding: 18px;
-    background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
-    transition: transform 240ms var(--ease), border-color 240ms var(--ease);
-  }
+  .offer-grid { margin-top: 16px; display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .offer-card { display: flex; flex-direction: column; justify-content: space-between; gap: 14px; min-height: 132px; padding: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 18px; transition: transform 240ms var(--ease), border-color 240ms var(--ease); }
   .offer-card:hover { transform: translateY(-3px); border-color: var(--border-strong); }
   .offer-card.paused { opacity: 0.62; }
-  .offer-card-top { display: flex; align-items: center; justify-content: space-between; }
-  .offer-id { font-family: var(--mono); font-size: 13px; font-weight: 620; letter-spacing: -0.02em; }
+  .offer-card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .offer-id { font-family: var(--mono); font-size: 13px; font-weight: 620; letter-spacing: -0.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .offer-count { font-size: 40px; font-weight: 600; }
   .offer-foot { font-size: 11.5px; }
-  .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--border-strong); box-shadow: 0 0 0 4px var(--surface-2);
-  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border-strong); box-shadow: 0 0 0 4px var(--surface-2); flex: none; }
   .dot.active { background: var(--ink); }
-
-  .empty-state {
-    margin-top: 16px; padding: 30px; border: 1px dashed var(--border-strong);
-    border-radius: 20px; background: var(--surface);
-    display: flex; flex-direction: column; gap: 6px; color: var(--muted);
-  }
+  .empty-state { margin-top: 16px; padding: 30px; border: 1px dashed var(--border-strong); border-radius: 20px; background: var(--surface); display: flex; flex-direction: column; gap: 6px; color: var(--muted); }
   .empty-state strong { color: var(--ink); }
 
-  /* ---- Sections & tables ---- */
   .section-block { margin-top: 52px; scroll-margin-top: 24px; }
   .section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
   .section-heading .eyebrow { margin-bottom: 7px; }
-
-  .table-card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 20px; box-shadow: var(--shadow-sm); overflow: hidden;
-  }
+  .table-card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow-sm); overflow: hidden; }
   .table-scroll { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; min-width: 820px; }
-  thead th {
-    position: sticky; top: 0;
-    color: var(--muted); font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase;
-    font-weight: 640; text-align: left;
-    padding: 14px 18px; background: var(--surface-2);
-    border-bottom: 1px solid var(--border);
-  }
+  thead th { position: sticky; top: 0; color: var(--muted); font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; font-weight: 640; text-align: left; padding: 14px 18px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
   td { padding: 15px 18px; text-align: left; border-bottom: 1px solid var(--border); font-size: 14px; vertical-align: middle; }
   tbody tr { transition: background 180ms var(--ease); }
   tbody tr:hover { background: var(--surface-2); }
   tbody tr:last-child td { border-bottom: 0; }
   td .mono { font-size: 13px; }
   .align-right { text-align: right; }
-  .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+  .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; flex-wrap: wrap; }
   .text-button.danger { color: #c33b32; }
   .text-button.danger:hover { background: color-mix(in srgb, #c33b32 9%, transparent); }
   .state-label { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 580; }
@@ -1251,22 +964,13 @@ const styles = `
   .state-label.on::before { background: var(--ink); }
   .table-empty { padding: 42px; text-align: center; color: var(--muted); }
   .nowrap { white-space: nowrap; }
+  .tag-src { margin-left: 6px; font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; padding: 2px 5px; border-radius: 5px; background: var(--ink); color: var(--surface); vertical-align: middle; }
 
-  .log-card table { min-width: 1060px; }
-  .meta-view { white-space: nowrap; }
-  .log-card td:last-child { width: 100%; }
-  .raw-query {
-    display: block; max-width: 640px; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; color: var(--muted); font-size: 12px;
-  }
-  .status {
-    display: inline-flex; min-width: 74px; justify-content: center;
-    padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px;
-    font-size: 11px; font-weight: 620; text-transform: capitalize;
-  }
+  .log-card table { min-width: 760px; }
+  .status { display: inline-flex; min-width: 74px; justify-content: center; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; font-weight: 620; text-transform: capitalize; }
   .status-sent { background: var(--ink); color: var(--surface); border-color: var(--ink); }
   .status-failed { border-style: dashed; }
-  .status-duplicate { opacity: 0.5; }
+  .status-received { opacity: 0.7; }
   .log-row { animation: fadeRise 440ms var(--ease) both; }
 
   .meta-dialog { max-width: 700px; }
@@ -1276,11 +980,19 @@ const styles = `
   .meta-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--border); }
   .meta-summary div { display: flex; flex-direction: column; gap: 7px; padding: 14px; background: var(--surface-2); }
   .meta-summary span, .meta-trace span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+  .meta-summary strong { overflow: hidden; text-overflow: ellipsis; }
   .meta-trace { display: flex; flex-direction: column; gap: 7px; margin-top: 16px; }
   .meta-trace code { overflow-wrap: anywhere; font-size: 12px; }
-  .response-json { max-height: 340px; overflow: auto; margin: 16px 0 0; padding: 16px; border-radius: 12px; background: var(--bg); border: 1px solid var(--border); color: var(--ink); font: 12px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .block-label { margin: 18px 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); font-weight: 680; }
+  .response-json { max-height: 300px; overflow: auto; margin: 0; padding: 16px; border-radius: 12px; background: var(--bg); border: 1px solid var(--border); color: var(--ink); font: 12px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .response-json.subtle { color: var(--muted); }
+  .empty-response { margin-top: 16px; }
 
-  /* ---- Test event ---- */
+  .url-copy { font-size: 13.5px; line-height: 1.6; margin-bottom: 14px; }
+  .url-copy code { font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
+  .url-box { padding: 16px; border-radius: 12px; background: var(--bg); border: 1px solid var(--border); margin-bottom: 16px; }
+  .url-code { font-size: 12.5px; line-height: 1.7; overflow-wrap: anywhere; word-break: break-all; color: var(--ink); }
+
   .test-card { display: grid; grid-template-columns: minmax(240px, .72fr) minmax(420px, 1.28fr); gap: 36px; padding: 28px; background: var(--surface); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow-sm); }
   .test-copy { display: flex; gap: 16px; align-items: flex-start; }
   .test-copy h3 { margin-bottom: 10px; }
@@ -1293,46 +1005,24 @@ const styles = `
   .test-submit { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-top: 4px; }
   .test-submit .hint { max-width: 410px; margin: 0; }
 
-  footer {
-    margin-top: 52px; padding-top: 22px; border-top: 1px solid var(--border);
-    display: flex; justify-content: space-between; gap: 16px;
-    color: var(--muted); font-size: 12px;
-  }
+  footer { margin-top: 52px; padding-top: 22px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: 12px; }
 
-  /* ---- Dialogs (top layer) ---- */
-  dialog.dialog {
-    margin: auto; padding: 0; border: 0; background: transparent;
-    max-width: min(560px, calc(100vw - 32px)); width: 100%;
-  }
-  dialog.dialog::backdrop {
-    background: color-mix(in srgb, #000 42%, transparent);
-    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-  }
+  dialog.dialog { margin: auto; padding: 0; border: 0; background: transparent; max-width: min(560px, calc(100vw - 32px)); width: 100%; }
+  dialog.dialog::backdrop { background: color-mix(in srgb, #000 42%, transparent); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
   dialog.dialog[open] { animation: dialogIn 260ms var(--ease); }
   dialog.dialog[open]::backdrop { animation: backdropIn 260ms var(--ease); }
-  .dialog-inner {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 22px; padding: 22px; box-shadow: var(--shadow-lg);
-  }
+  .dialog-inner { background: var(--surface); border: 1px solid var(--border); border-radius: 22px; padding: 22px; box-shadow: var(--shadow-lg); }
   .dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
   .dialog-head .eyebrow { margin-bottom: 6px; }
-
   .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
   .form-grid label, .stack-form label { display: flex; flex-direction: column; gap: 7px; }
   .form-grid label span, .stack-form label span { font-size: 12px; font-weight: 620; color: var(--muted); }
+  .form-grid label em { font-weight: 450; font-style: normal; }
   .wide-field { grid-column: 1 / -1; }
-  input, select {
-    width: 100%; height: 44px; border: 1px solid var(--border); border-radius: 11px;
-    background: var(--bg); padding: 0 13px; outline: none;
-    transition: border 160ms var(--ease), box-shadow 160ms var(--ease), background 160ms var(--ease);
-  }
-  input:focus, select:focus {
-    border-color: var(--ink); background: var(--surface);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 9%, transparent);
-  }
+  input, select { width: 100%; height: 44px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg); padding: 0 13px; outline: none; transition: border 160ms var(--ease), box-shadow 160ms var(--ease), background 160ms var(--ease); }
+  input:focus, select:focus { border-color: var(--ink); background: var(--surface); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 9%, transparent); }
   .form-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 4px; }
 
-  /* ---- Auth ---- */
   .auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--bg); }
   .auth-card { width: min(440px, 100%); padding: 34px; background: var(--surface); border: 1px solid var(--border); border-radius: 26px; box-shadow: var(--shadow-lg); }
   .auth-card .brand-mark { margin-bottom: 30px; }
@@ -1340,22 +1030,15 @@ const styles = `
   .auth-copy { margin-top: 14px; line-height: 1.6; font-size: 14px; }
   .stack-form { display: grid; gap: 16px; margin-top: 26px; }
 
-  /* ---- Motion ---- */
   .rise { animation: fadeRise 560ms var(--ease) both; }
   @keyframes fadeRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
   @keyframes dialogIn { from { opacity: 0; transform: translateY(10px) scale(0.985); } to { opacity: 1; transform: none; } }
   @keyframes backdropIn { from { opacity: 0; } to { opacity: 1; } }
 
-  /* ---- Responsive ---- */
-  @media (max-width: 1180px) {
-    .offer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  }
+  @media (max-width: 1180px) { .offer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 900px) {
     .app { grid-template-columns: 1fr; }
-    .rail {
-      position: static; height: auto; flex-direction: column;
-      border-right: 0; border-bottom: 1px solid var(--border);
-    }
+    .rail { position: static; height: auto; flex-direction: column; border-right: 0; border-bottom: 1px solid var(--border); }
     .rail-nav { flex-direction: row; flex-wrap: wrap; }
     .rail-nav a { flex: 1; min-width: 140px; }
     .hero { grid-template-columns: 1fr; }
@@ -1373,8 +1056,5 @@ const styles = `
     .wide-field { grid-column: auto; }
     .quiet-label { display: none; }
   }
-
-  @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
-  }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; scroll-behavior: auto !important; } }
 `;

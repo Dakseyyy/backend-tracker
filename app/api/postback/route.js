@@ -36,7 +36,7 @@ async function updateEvent(supabase, id, patch) {
   if (error) console.error("Failed to update event:", error.message);
 }
 
-async function processPostback({ rawQuery, offerId, fbclid, arrivalMs }) {
+async function processPostback({ rawQuery, pixelId, fbclid, postbackPayout, arrivalMs }) {
   let supabase;
   try {
     supabase = getSupabaseAdmin();
@@ -48,13 +48,13 @@ async function processPostback({ rawQuery, offerId, fbclid, arrivalMs }) {
   // Always log the raw hit first.
   const eventId = await logEvent(supabase, {
     raw_query: rawQuery,
-    offer_id: offerId || null,
+    pixel_id: pixelId || null,
     status: "received",
   });
 
-  // Find the offer config.
-  if (!offerId) {
-    const message = "No offer_id in postback URL.";
+  // Route by pixel_id.
+  if (!pixelId) {
+    const message = "No pixel_id in postback URL.";
     await updateEvent(supabase, eventId, {
       status: "failed",
       meta_response: { stage: "routing", error: message },
@@ -64,17 +64,26 @@ async function processPostback({ rawQuery, offerId, fbclid, arrivalMs }) {
 
   const { data: config, error: configError } = await supabase
     .from("configs")
-    .select("offer_id,pixel_id,pixel_access_token,payout,active")
-    .eq("offer_id", offerId)
+    .select("pixel_id,pixel_access_token,payout,active")
+    .eq("pixel_id", pixelId)
     .maybeSingle();
 
   if (configError || !config) {
-    const message = configError?.message || `No config found for offer_id ${offerId}.`;
+    const message = configError?.message || `No config found for pixel_id ${pixelId}.`;
     await updateEvent(supabase, eventId, {
       status: "failed",
       meta_response: { stage: "routing", error: message },
     });
     console.error(message);
+    return { status: "failed", stage: "routing", error: message };
+  }
+
+  if (!config.active) {
+    const message = `Config for pixel_id ${pixelId} is paused.`;
+    await updateEvent(supabase, eventId, {
+      status: "failed",
+      meta_response: { stage: "routing", error: message },
+    });
     return { status: "failed", stage: "routing", error: message };
   }
 
@@ -88,6 +97,13 @@ async function processPostback({ rawQuery, offerId, fbclid, arrivalMs }) {
     return { status: "failed", stage: "validation", error: message };
   }
 
+  // Payout: use the postback value if it's a valid number, else fall back to config payout.
+  const parsedPostbackPayout = Number(postbackPayout);
+  const payoutIsValid =
+    postbackPayout !== "" && Number.isFinite(parsedPostbackPayout) && parsedPostbackPayout >= 0;
+  const value = payoutIsValid ? parsedPostbackPayout : Number(config.payout || 0);
+  const payoutSource = payoutIsValid ? "postback" : "config";
+
   // Build and send the Meta event.
   const graphVersion = process.env.META_GRAPH_API_VERSION || "v24.0";
   const currency = process.env.META_CURRENCY || "USD";
@@ -96,11 +112,11 @@ async function processPostback({ rawQuery, offerId, fbclid, arrivalMs }) {
   const payload = {
     data: [
       {
-        event_name: "Purchase",
+        event_name: "Lead",
         event_time: Math.floor(arrivalMs / 1000),
         action_source: "website",
         user_data: { fbc },
-        custom_data: { currency, value: Number(config.payout || 0) },
+        custom_data: { currency, value },
       },
     ],
   };
@@ -133,11 +149,15 @@ async function processPostback({ rawQuery, offerId, fbclid, arrivalMs }) {
       meta_events_received: eventsReceived,
       meta_trace_id: body?.fbtrace_id || null,
       meta_response: body,
+      forwarded_value: value,
+      payout_source: payoutSource,
     });
 
     return {
       status: ok ? "sent" : "failed",
       stage: "meta",
+      forwarded_value: value,
+      payout_source: payoutSource,
       meta_http_status: response.status,
       meta_response: body,
     };
@@ -157,10 +177,11 @@ export async function GET(request) {
   const rawQuery = questionMarkIndex === -1 ? "" : request.url.slice(questionMarkIndex + 1);
   const url = new URL(request.url);
 
-  const offerId = url.searchParams.get("offer_id")?.trim() || "";
+  const pixelId = url.searchParams.get("pixel_id")?.trim() || "";
   const fbclid = url.searchParams.get("source")?.trim() || "";
+  const postbackPayout = url.searchParams.get("payout")?.trim() || "";
   const debug = url.searchParams.get("debug") === "1";
-  const event = { rawQuery, offerId, fbclid, arrivalMs };
+  const event = { rawQuery, pixelId, fbclid, postbackPayout, arrivalMs };
 
   if (debug) {
     const result = await processPostback(event);
