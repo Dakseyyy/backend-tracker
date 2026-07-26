@@ -8,106 +8,36 @@ export const maxDuration = 10;
 function getSupabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
   if (!url || !serviceRoleKey) {
     throw new Error("Missing Supabase server environment variables.");
   }
-
   return createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
 }
 
-function isMissingOptionalColumn(error) {
-  const message = String(error?.message || "");
-  return (
-    error?.code === "42703" ||
-    error?.code === "PGRST204" ||
-    /column.*does not exist|schema cache/i.test(message)
-  );
-}
-
-async function insertReceivedEvent(supabase, event) {
-  const fullRow = {
-    raw_query: event.rawQuery,
-    offer_id: event.offerId || null,
-    transaction_id: event.transactionId || null,
-    status: "received",
-  };
-
-  let result = await supabase
+// Insert a row for this postback and return its id (best-effort; never blocks forwarding).
+async function logEvent(supabase, row) {
+  const { data, error } = await supabase
     .from("events")
-    .insert(fullRow)
+    .insert(row)
     .select("id")
     .single();
-
-  if (result.error?.code === "23505" && event.transactionId) {
-    const duplicateResult = await supabase
-      .from("events")
-      .insert({
-        raw_query: event.rawQuery,
-        offer_id: event.offerId || null,
-        transaction_id: null,
-        status: "duplicate",
-      })
-      .select("id")
-      .single();
-
-    if (duplicateResult.error) {
-      console.error("Failed to log duplicate postback:", duplicateResult.error.message);
-    }
-
-    return { duplicate: true, id: duplicateResult.data?.id || null, legacy: false };
+  if (error) {
+    console.error("Failed to log event:", error.message);
+    return null;
   }
-
-  if (result.error && isMissingOptionalColumn(result.error)) {
-    result = await supabase
-      .from("events")
-      .insert({ raw_query: event.rawQuery })
-      .select("id")
-      .single();
-
-    if (result.error) {
-      console.error("Failed to log postback:", result.error.message);
-      return { duplicate: false, id: null, legacy: true };
-    }
-
-    return { duplicate: false, id: result.data?.id || null, legacy: true };
-  }
-
-  if (result.error) {
-    console.error("Failed to log postback:", result.error.message);
-    return { duplicate: false, id: null, legacy: false };
-  }
-
-  return { duplicate: false, id: result.data?.id || null, legacy: false };
+  return data?.id || null;
 }
 
-async function setEventStatus(supabase, eventRecord, status, diagnostic = null) {
-  if (!eventRecord.id || eventRecord.legacy) return;
-
-  const update = { status };
-  if (diagnostic) {
-    update.meta_http_status = diagnostic.httpStatus ?? null;
-    update.meta_events_received = diagnostic.eventsReceived ?? null;
-    update.meta_trace_id = diagnostic.traceId || null;
-    update.meta_response = diagnostic.response || null;
-  }
-
-  let result = await supabase.from("events").update(update).eq("id", eventRecord.id);
-  if (result.error && diagnostic && isMissingOptionalColumn(result.error)) {
-    result = await supabase.from("events").update({ status }).eq("id", eventRecord.id);
-  }
-  if (result.error) console.error(`Failed to set event status to ${status}:`, result.error.message);
+async function updateEvent(supabase, id, patch) {
+  if (!id) return;
+  const { error } = await supabase.from("events").update(patch).eq("id", id);
+  if (error) console.error("Failed to update event:", error.message);
 }
 
-async function processPostback({ rawQuery, offerId, fbclid, transactionId, arrivalMs }) {
+async function processPostback({ rawQuery, offerId, fbclid, arrivalMs }) {
   let supabase;
-
   try {
     supabase = getSupabaseAdmin();
   } catch (error) {
@@ -115,84 +45,65 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
     return { status: "failed", stage: "setup", error: error.message };
   }
 
-  const eventRecord = await insertReceivedEvent(supabase, {
-    rawQuery,
-    offerId,
-    transactionId,
+  // Always log the raw hit first.
+  const eventId = await logEvent(supabase, {
+    raw_query: rawQuery,
+    offer_id: offerId || null,
+    status: "received",
   });
 
-  if (eventRecord.duplicate) {
-    return { status: "duplicate", stage: "deduplication" };
+  // Find the offer config.
+  if (!offerId) {
+    const message = "No offer_id in postback URL.";
+    await updateEvent(supabase, eventId, {
+      status: "failed",
+      meta_response: { stage: "routing", error: message },
+    });
+    return { status: "failed", stage: "routing", error: message };
   }
 
-  let config;
-  let configError;
+  const { data: config, error: configError } = await supabase
+    .from("configs")
+    .select("offer_id,pixel_id,pixel_access_token,payout,active")
+    .eq("offer_id", offerId)
+    .maybeSingle();
 
-  if (offerId) {
-    const result = await supabase
-      .from("configs")
-      .select("offer_id,pixel_id,pixel_access_token,payout,active")
-      .eq("offer_id", offerId)
-      .maybeSingle();
-    config = result.data;
-    configError = result.error;
-  } else {
-    const result = await supabase
-      .from("configs")
-      .select("offer_id,pixel_id,pixel_access_token,payout,active")
-      .eq("active", true)
-      .limit(2);
-    configError = result.error;
-    if (!configError && result.data?.length === 1) config = result.data[0];
-    if (!configError && result.data?.length > 1) {
-      configError = new Error("Multiple active offer routes exist; source-only postbacks are ambiguous.");
-    }
-  }
-
-  if (configError || !config || !config.active) {
-    const message = configError?.message || (offerId
-      ? `No active config found for offer_id ${offerId}.`
-      : "No single active offer route is available for this source-only postback.");
-    await setEventStatus(supabase, eventRecord, "failed", {
-      response: { stage: "routing", error: message },
+  if (configError || !config) {
+    const message = configError?.message || `No config found for offer_id ${offerId}.`;
+    await updateEvent(supabase, eventId, {
+      status: "failed",
+      meta_response: { stage: "routing", error: message },
     });
     console.error(message);
     return { status: "failed", stage: "routing", error: message };
   }
 
-  const routedOfferId = String(config.offer_id);
-  if (eventRecord.id && !eventRecord.legacy && !offerId) {
-    const { error } = await supabase.from("events").update({ offer_id: routedOfferId }).eq("id", eventRecord.id);
-    if (error) console.error("Failed to record inferred offer route:", error.message);
-  }
-
   if (!fbclid) {
-    const message = `Postback for offer_id ${offerId || "(none)"} is missing source/fbclid.`;
-    await setEventStatus(supabase, eventRecord, "failed", {
-      response: { stage: "validation", error: message },
+    const message = "Postback is missing source/fbclid.";
+    await updateEvent(supabase, eventId, {
+      status: "failed",
+      meta_response: { stage: "validation", error: message },
     });
     console.error(message);
     return { status: "failed", stage: "validation", error: message };
   }
 
+  // Build and send the Meta event.
   const graphVersion = process.env.META_GRAPH_API_VERSION || "v24.0";
   const currency = process.env.META_CURRENCY || "USD";
   const fbc = `fb.1.${arrivalMs}.${fbclid}`;
 
-  const metaEvent = {
-    event_name: "Purchase",
-    event_time: Math.floor(arrivalMs / 1000),
-    action_source: "website",
-    user_data: { fbc },
-    custom_data: {
-      currency,
-      value: Number(config.payout || 0),
-    },
+  const payload = {
+    data: [
+      {
+        event_name: "Purchase",
+        event_time: Math.floor(arrivalMs / 1000),
+        action_source: "website",
+        user_data: { fbc },
+        custom_data: { currency, value: Number(config.payout || 0) },
+      },
+    ],
   };
-
-  if (transactionId) {
-    metaEvent.event_id = transactionId;
-  }
 
   const endpoint = new URL(
     `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(config.pixel_id)}/events`,
@@ -203,7 +114,7 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: [metaEvent] }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(8000),
       cache: "no-store",
     });
@@ -212,37 +123,29 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
     let body;
     try { body = JSON.parse(responseText); }
     catch { body = { raw: responseText.slice(0, 1500) }; }
+
     const eventsReceived = Number(body?.events_received || 0);
-    const diagnostic = {
-      httpStatus: response.status,
-      eventsReceived,
-      traceId: body?.fbtrace_id || null,
-      response: body,
-    };
+    const ok = response.ok && eventsReceived >= 1;
 
-    if (!response.ok || eventsReceived < 1) {
-      await setEventStatus(supabase, eventRecord, "failed", diagnostic);
-      console.error(`Meta CAPI rejected event (HTTP ${response.status}):`, JSON.stringify(body).slice(0, 1500));
-      return {
-        status: "failed",
-        stage: "meta",
-        meta_http_status: response.status,
-        meta_response: body,
-      };
-    }
+    await updateEvent(supabase, eventId, {
+      status: ok ? "sent" : "failed",
+      meta_http_status: response.status,
+      meta_events_received: eventsReceived,
+      meta_trace_id: body?.fbtrace_id || null,
+      meta_response: body,
+    });
 
-    await setEventStatus(supabase, eventRecord, "sent", diagnostic);
-    console.info(`Meta accepted ${eventsReceived} event(s). Trace: ${body.fbtrace_id || "none"}`);
     return {
-      status: "sent",
+      status: ok ? "sent" : "failed",
       stage: "meta",
-      routed_offer_id: routedOfferId,
-      routed_pixel_id: config.pixel_id,
       meta_http_status: response.status,
       meta_response: body,
     };
   } catch (error) {
-    await setEventStatus(supabase, eventRecord, "failed", { response: { error: error.message } });
+    await updateEvent(supabase, eventId, {
+      status: "failed",
+      meta_response: { stage: "meta_request", error: error.message },
+    });
     console.error("Meta CAPI request failed:", error.message);
     return { status: "failed", stage: "meta_request", error: error.message };
   }
@@ -256,9 +159,8 @@ export async function GET(request) {
 
   const offerId = url.searchParams.get("offer_id")?.trim() || "";
   const fbclid = url.searchParams.get("source")?.trim() || "";
-  const transactionId = url.searchParams.get("transaction_id")?.trim() || fbclid;
   const debug = url.searchParams.get("debug") === "1";
-  const event = { rawQuery, offerId, fbclid, transactionId, arrivalMs };
+  const event = { rawQuery, offerId, fbclid, arrivalMs };
 
   if (debug) {
     const result = await processPostback(event);
@@ -269,12 +171,8 @@ export async function GET(request) {
   }
 
   after(() => processPostback(event));
-
   return new Response("OK", {
     status: 200,
-    headers: {
-      "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "no-store",
-    },
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
   });
 }
