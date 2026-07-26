@@ -337,11 +337,21 @@ async function loadDashboardData() {
 
   let eventsResult = await supabase
     .from("events")
-    .select("id,raw_query,offer_id,status,created_at")
+    .select("id,raw_query,offer_id,status,created_at,meta_http_status,meta_events_received,meta_trace_id,meta_response")
     .order("created_at", { ascending: false })
     .limit(60);
 
   let hasEnhancedEvents = true;
+  let hasMetaDiagnostics = true;
+
+  if (eventsResult.error && isMissingOptionalColumn(eventsResult.error)) {
+    hasMetaDiagnostics = false;
+    eventsResult = await supabase
+      .from("events")
+      .select("id,raw_query,offer_id,status,created_at")
+      .order("created_at", { ascending: false })
+      .limit(60);
+  }
 
   if (eventsResult.error && isMissingOptionalColumn(eventsResult.error)) {
     hasEnhancedEvents = false;
@@ -384,6 +394,7 @@ async function loadDashboardData() {
     events,
     counts,
     hasEnhancedEvents,
+    hasMetaDiagnostics,
   };
 }
 
@@ -457,7 +468,7 @@ export default async function Dashboard({ searchParams }) {
     data = await loadDashboardData();
   } catch (error) {
     setupError = error.message || "Could not load Supabase data.";
-    data = { configs: [], events: [], counts: {}, hasEnhancedEvents: false };
+    data = { configs: [], events: [], counts: {}, hasEnhancedEvents: false, hasMetaDiagnostics: false };
   }
 
   const headerStore = await headers();
@@ -733,6 +744,7 @@ export default async function Dashboard({ searchParams }) {
                     <th>Received</th>
                     <th>Offer</th>
                     <th>Status</th>
+                    <th>Meta response</th>
                     <th>Raw query</th>
                   </tr>
                 </thead>
@@ -746,12 +758,19 @@ export default async function Dashboard({ searchParams }) {
                       <td className="nowrap muted mono">{dateTime(event.created_at)}</td>
                       <td><strong className="mono">{event.offer_id}</strong></td>
                       <td><StatusPill status={event.status} /></td>
+                      <td>
+                        {event.meta_response ? (
+                          <button className="text-button meta-view" type="button" data-open={`dialog-meta-${event.id}`}>
+                            View ? {event.meta_events_received ?? 0} accepted
+                          </button>
+                        ) : <span className="muted">?</span>}
+                      </td>
                       <td><code className="raw-query">{event.raw_query || "(empty query)"}</code></td>
                     </tr>
                   ))}
                   {!data.events.length ? (
                     <tr>
-                      <td colSpan="4" className="table-empty">No postbacks received yet.</td>
+                      <td colSpan="5" className="table-empty">No postbacks received yet.</td>
                     </tr>
                   ) : null}
                 </tbody>
@@ -845,6 +864,24 @@ export default async function Dashboard({ searchParams }) {
                 <button className="button primary" type="submit">Save changes</button>
               </div>
             </form>
+          </div>
+        </dialog>
+      ))}
+
+      {data.events.filter((event) => event.meta_response).map((event) => (
+        <dialog id={`dialog-meta-${event.id}`} className="dialog" key={`meta-${event.id}`}>
+          <div className="dialog-inner meta-dialog">
+            <div className="dialog-head">
+              <div><p className="eyebrow">Meta acknowledgement</p><h3>Forwarding response</h3></div>
+              <button className="icon-button" type="button" data-close aria-label="Close">?</button>
+            </div>
+            <div className="meta-summary">
+              <div><span>Offer</span><strong className="mono">{event.offer_id}</strong></div>
+              <div><span>HTTP</span><strong className="mono">{event.meta_http_status ?? "?"}</strong></div>
+              <div><span>Accepted</span><strong className="mono">{event.meta_events_received ?? 0}</strong></div>
+            </div>
+            {event.meta_trace_id ? <p className="meta-trace"><span>Trace ID</span><code>{event.meta_trace_id}</code></p> : null}
+            <pre className="response-json">{JSON.stringify(event.meta_response, null, 2)}</pre>
           </div>
         </dialog>
       ))}
@@ -1196,7 +1233,8 @@ const styles = `
   .table-empty { padding: 42px; text-align: center; color: var(--muted); }
   .nowrap { white-space: nowrap; }
 
-  .log-card table { min-width: 940px; }
+  .log-card table { min-width: 1060px; }
+  .meta-view { white-space: nowrap; }
   .log-card td:last-child { width: 100%; }
   .raw-query {
     display: block; max-width: 640px; white-space: nowrap; overflow: hidden;
@@ -1211,6 +1249,14 @@ const styles = `
   .status-failed { border-style: dashed; }
   .status-duplicate { opacity: 0.5; }
   .log-row { animation: fadeRise 440ms var(--ease) both; }
+
+  .meta-dialog { max-width: 700px; }
+  .meta-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--border); }
+  .meta-summary div { display: flex; flex-direction: column; gap: 7px; padding: 14px; background: var(--surface-2); }
+  .meta-summary span, .meta-trace span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+  .meta-trace { display: flex; flex-direction: column; gap: 7px; margin-top: 16px; }
+  .meta-trace code { overflow-wrap: anywhere; font-size: 12px; }
+  .response-json { max-height: 340px; overflow: auto; margin: 16px 0 0; padding: 16px; border-radius: 12px; background: var(--bg); border: 1px solid var(--border); color: var(--ink); font: 12px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
   /* ---- Test event ---- */
   .test-card { display: grid; grid-template-columns: minmax(240px, .72fr) minmax(420px, 1.28fr); gap: 36px; padding: 28px; background: var(--surface); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow-sm); }

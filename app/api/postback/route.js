@@ -87,17 +87,22 @@ async function insertReceivedEvent(supabase, event) {
   return { duplicate: false, id: result.data?.id || null, legacy: false };
 }
 
-async function setEventStatus(supabase, eventRecord, status) {
+async function setEventStatus(supabase, eventRecord, status, diagnostic = null) {
   if (!eventRecord.id || eventRecord.legacy) return;
 
-  const { error } = await supabase
-    .from("events")
-    .update({ status })
-    .eq("id", eventRecord.id);
-
-  if (error) {
-    console.error(`Failed to set event status to ${status}:`, error.message);
+  const update = { status };
+  if (diagnostic) {
+    update.meta_http_status = diagnostic.httpStatus ?? null;
+    update.meta_events_received = diagnostic.eventsReceived ?? null;
+    update.meta_trace_id = diagnostic.traceId || null;
+    update.meta_response = diagnostic.response || null;
   }
+
+  let result = await supabase.from("events").update(update).eq("id", eventRecord.id);
+  if (result.error && diagnostic && isMissingOptionalColumn(result.error)) {
+    result = await supabase.from("events").update({ status }).eq("id", eventRecord.id);
+  }
+  if (result.error) console.error(`Failed to set event status to ${status}:`, result.error.message);
 }
 
 async function processPostback({ rawQuery, offerId, fbclid, transactionId, arrivalMs }) {
@@ -120,23 +125,43 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
     return { status: "duplicate", stage: "deduplication" };
   }
 
-  if (!offerId) {
-    await setEventStatus(supabase, eventRecord, "failed");
-    console.error("Postback missing offer_id.");
-    return { status: "failed", stage: "validation", error: "Missing offer_id." };
-  }
+  let config;
+  let configError;
 
-  const { data: config, error: configError } = await supabase
-    .from("configs")
-    .select("pixel_id,pixel_access_token,payout,active")
-    .eq("offer_id", offerId)
-    .maybeSingle();
+  if (offerId) {
+    const result = await supabase
+      .from("configs")
+      .select("offer_id,pixel_id,pixel_access_token,payout,active")
+      .eq("offer_id", offerId)
+      .maybeSingle();
+    config = result.data;
+    configError = result.error;
+  } else {
+    const result = await supabase
+      .from("configs")
+      .select("offer_id,pixel_id,pixel_access_token,payout,active")
+      .eq("active", true)
+      .limit(2);
+    configError = result.error;
+    if (!configError && result.data?.length === 1) config = result.data[0];
+    if (!configError && result.data?.length > 1) {
+      configError = new Error("Multiple active offer routes exist; source-only postbacks are ambiguous.");
+    }
+  }
 
   if (configError || !config || !config.active) {
     await setEventStatus(supabase, eventRecord, "failed");
-    const message = configError?.message || `No active config found for offer_id ${offerId}.`;
+    const message = configError?.message || (offerId
+      ? `No active config found for offer_id ${offerId}.`
+      : "No single active offer route is available for this source-only postback.");
     console.error(message);
     return { status: "failed", stage: "routing", error: message };
+  }
+
+  const routedOfferId = String(config.offer_id);
+  if (eventRecord.id && !eventRecord.legacy && !offerId) {
+    const { error } = await supabase.from("events").update({ offer_id: routedOfferId }).eq("id", eventRecord.id);
+    if (error) console.error("Failed to record inferred offer route:", error.message);
   }
 
   if (!fbclid) {
@@ -179,13 +204,20 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
       cache: "no-store",
     });
 
-    const body = await response.json().catch(async () => ({
-      raw: (await response.text().catch(() => "")).slice(0, 1500),
-    }));
+    const responseText = await response.text();
+    let body;
+    try { body = JSON.parse(responseText); }
+    catch { body = { raw: responseText.slice(0, 1500) }; }
     const eventsReceived = Number(body?.events_received || 0);
+    const diagnostic = {
+      httpStatus: response.status,
+      eventsReceived,
+      traceId: body?.fbtrace_id || null,
+      response: body,
+    };
 
     if (!response.ok || eventsReceived < 1) {
-      await setEventStatus(supabase, eventRecord, "failed");
+      await setEventStatus(supabase, eventRecord, "failed", diagnostic);
       console.error(`Meta CAPI rejected event (HTTP ${response.status}):`, JSON.stringify(body).slice(0, 1500));
       return {
         status: "failed",
@@ -195,18 +227,18 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
       };
     }
 
-    await setEventStatus(supabase, eventRecord, "sent");
+    await setEventStatus(supabase, eventRecord, "sent", diagnostic);
     console.info(`Meta accepted ${eventsReceived} event(s). Trace: ${body.fbtrace_id || "none"}`);
     return {
       status: "sent",
       stage: "meta",
-      routed_offer_id: offerId,
+      routed_offer_id: routedOfferId,
       routed_pixel_id: config.pixel_id,
       meta_http_status: response.status,
       meta_response: body,
     };
   } catch (error) {
-    await setEventStatus(supabase, eventRecord, "failed");
+    await setEventStatus(supabase, eventRecord, "failed", { response: { error: error.message } });
     console.error("Meta CAPI request failed:", error.message);
     return { status: "failed", stage: "meta_request", error: error.message };
   }
@@ -220,7 +252,7 @@ export async function GET(request) {
 
   const offerId = url.searchParams.get("offer_id")?.trim() || "";
   const fbclid = url.searchParams.get("source")?.trim() || "";
-  const transactionId = url.searchParams.get("transaction_id")?.trim() || "";
+  const transactionId = url.searchParams.get("transaction_id")?.trim() || fbclid;
   const debug = url.searchParams.get("debug") === "1";
   const event = { rawQuery, offerId, fbclid, transactionId, arrivalMs };
 
