@@ -107,7 +107,7 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
     supabase = getSupabaseAdmin();
   } catch (error) {
     console.error(error.message);
-    return;
+    return { status: "failed", stage: "setup", error: error.message };
   }
 
   const eventRecord = await insertReceivedEvent(supabase, {
@@ -116,12 +116,14 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
     transactionId,
   });
 
-  if (eventRecord.duplicate) return;
+  if (eventRecord.duplicate) {
+    return { status: "duplicate", stage: "deduplication" };
+  }
 
   if (!offerId) {
     await setEventStatus(supabase, eventRecord, "failed");
     console.error("Postback missing offer_id.");
-    return;
+    return { status: "failed", stage: "validation", error: "Missing offer_id." };
   }
 
   const { data: config, error: configError } = await supabase
@@ -132,16 +134,16 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
 
   if (configError || !config || !config.active) {
     await setEventStatus(supabase, eventRecord, "failed");
-    console.error(
-      configError?.message || `No active config found for offer_id ${offerId}.`,
-    );
-    return;
+    const message = configError?.message || `No active config found for offer_id ${offerId}.`;
+    console.error(message);
+    return { status: "failed", stage: "routing", error: message };
   }
 
   if (!fbclid) {
     await setEventStatus(supabase, eventRecord, "failed");
-    console.error(`Postback for offer_id ${offerId} is missing source/fbclid.`);
-    return;
+    const message = `Postback for offer_id ${offerId} is missing source/fbclid.`;
+    console.error(message);
+    return { status: "failed", stage: "validation", error: message };
   }
 
   const graphVersion = process.env.META_GRAPH_API_VERSION || "v24.0";
@@ -177,17 +179,36 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
       cache: "no-store",
     });
 
-    if (!response.ok) {
-      const body = await response.text();
+    const body = await response.json().catch(async () => ({
+      raw: (await response.text().catch(() => "")).slice(0, 1500),
+    }));
+    const eventsReceived = Number(body?.events_received || 0);
+
+    if (!response.ok || eventsReceived < 1) {
       await setEventStatus(supabase, eventRecord, "failed");
-      console.error(`Meta CAPI error ${response.status}:`, body.slice(0, 1500));
-      return;
+      console.error(`Meta CAPI rejected event (HTTP ${response.status}):`, JSON.stringify(body).slice(0, 1500));
+      return {
+        status: "failed",
+        stage: "meta",
+        meta_http_status: response.status,
+        meta_response: body,
+      };
     }
 
     await setEventStatus(supabase, eventRecord, "sent");
+    console.info(`Meta accepted ${eventsReceived} event(s). Trace: ${body.fbtrace_id || "none"}`);
+    return {
+      status: "sent",
+      stage: "meta",
+      routed_offer_id: offerId,
+      routed_pixel_id: config.pixel_id,
+      meta_http_status: response.status,
+      meta_response: body,
+    };
   } catch (error) {
     await setEventStatus(supabase, eventRecord, "failed");
     console.error("Meta CAPI request failed:", error.message);
+    return { status: "failed", stage: "meta_request", error: error.message };
   }
 }
 
@@ -200,16 +221,18 @@ export async function GET(request) {
   const offerId = url.searchParams.get("offer_id")?.trim() || "";
   const fbclid = url.searchParams.get("source")?.trim() || "";
   const transactionId = url.searchParams.get("transaction_id")?.trim() || "";
+  const debug = url.searchParams.get("debug") === "1";
+  const event = { rawQuery, offerId, fbclid, transactionId, arrivalMs };
 
-  after(() =>
-    processPostback({
-      rawQuery,
-      offerId,
-      fbclid,
-      transactionId,
-      arrivalMs,
-    }),
-  );
+  if (debug) {
+    const result = await processPostback(event);
+    return Response.json(result, {
+      status: result?.status === "sent" ? 200 : 422,
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
+
+  after(() => processPostback(event));
 
   return new Response("OK", {
     status: 200,
