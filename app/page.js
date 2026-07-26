@@ -421,6 +421,15 @@ function StatusPill({ status }) {
   return <span className={`status status-${status}`}>{status}</span>;
 }
 
+function responseReason(event) {
+  const response = event.meta_response;
+  if (!response) return null;
+  if (typeof response.error === "string") return response.error;
+  return response?.error?.error_user_msg
+    || response?.error?.message
+    || (typeof response.raw === "string" ? response.raw : null);
+}
+
 function LoginScreen({ failed }) {
   return (
     <main className="auth-shell">
@@ -700,26 +709,26 @@ export default async function Dashboard({ searchParams }) {
         <section id="test-event" className="section-block">
           <div className="section-heading rise">
             <div><p className="eyebrow">Meta diagnostics</p><h2>Test event</h2></div>
-            <span className="quiet-label">Conversions API ? Purchase</span>
+            <span className="quiet-label">Conversions API / Purchase</span>
           </div>
           <div className="test-card rise">
             <div className="test-copy">
               <span className="test-index">01</span>
               <div>
                 <h3>Send through an offer route</h3>
-                <p className="muted">Choose a routing configuration, then paste the code from Meta Events Manager?s Test Events tab. The stored pixel ID, token, payout, and currency are used automatically.</p>
+                <p className="muted">Choose a routing configuration, then paste the code from Meta Events Manager's Test Events tab. The stored pixel ID, token, payout, and currency are used automatically.</p>
               </div>
             </div>
             <form action={sendTestEvent} className="test-form">
               <label><span>Offer routing</span><select name="config_id" required defaultValue="">
                 <option value="" disabled>Select an offer</option>
-                {data.configs.map((config) => <option value={config.id} key={`test-${config.id}`}>{config.offer_id} ? Pixel {config.pixel_id}</option>)}
+                {data.configs.map((config) => <option value={config.id} key={`test-${config.id}`}>{config.offer_id} - Pixel {config.pixel_id}</option>)}
               </select></label>
               <label><span>Meta test event code</span><input name="test_event_code" placeholder="TEST12345" autoComplete="off" required /></label>
               <label><span>fbclid <em>optional</em></span><input name="fbclid" placeholder="Paste a real click ID when available" autoComplete="off" /></label>
               <label><span>Event ID <em>optional</em></span><input name="event_id" placeholder="Generated automatically" autoComplete="off" /></label>
               <div className="test-submit">
-                <p className="hint">Marked as a test event so it appears in Meta?s Test Events view.</p>
+                <p className="hint">Marked as a test event so it appears in Meta's Test Events view.</p>
                 <button className="button primary" type="submit" disabled={!data.configs.length}>Send test event</button>
               </div>
             </form>
@@ -759,11 +768,11 @@ export default async function Dashboard({ searchParams }) {
                       <td><strong className="mono">{event.offer_id}</strong></td>
                       <td><StatusPill status={event.status} /></td>
                       <td>
-                        {event.meta_response ? (
+                        {event.meta_response || event.status === "failed" ? (
                           <button className="text-button meta-view" type="button" data-open={`dialog-meta-${event.id}`}>
-                            View ? {event.meta_events_received ?? 0} accepted
+                            {event.status === "failed" ? "View reason" : `View: ${event.meta_events_received ?? 0} accepted`}
                           </button>
-                        ) : <span className="muted">?</span>}
+                        ) : <span className="muted">--</span>}
                       </td>
                       <td><code className="raw-query">{event.raw_query || "(empty query)"}</code></td>
                     </tr>
@@ -868,20 +877,30 @@ export default async function Dashboard({ searchParams }) {
         </dialog>
       ))}
 
-      {data.events.filter((event) => event.meta_response).map((event) => (
+      {data.events.filter((event) => event.meta_response || event.status === "failed").map((event) => (
         <dialog id={`dialog-meta-${event.id}`} className="dialog" key={`meta-${event.id}`}>
           <div className="dialog-inner meta-dialog">
             <div className="dialog-head">
-              <div><p className="eyebrow">Meta acknowledgement</p><h3>Forwarding response</h3></div>
-              <button className="icon-button" type="button" data-close aria-label="Close">?</button>
+              <div>
+                <p className="eyebrow">{event.status === "sent" ? "Meta acknowledgement" : "Delivery failed"}</p>
+                <h3>{event.status === "sent" ? "Forwarding response" : "Why this did not send"}</h3>
+              </div>
+              <button className="icon-button" type="button" data-close aria-label="Close">x</button>
             </div>
+            {responseReason(event) ? (
+              <div className={`reason-banner ${event.status === "sent" ? "ok" : "bad"}`}>
+                {responseReason(event)}
+              </div>
+            ) : null}
             <div className="meta-summary">
               <div><span>Offer</span><strong className="mono">{event.offer_id}</strong></div>
-              <div><span>HTTP</span><strong className="mono">{event.meta_http_status ?? "?"}</strong></div>
+              <div><span>HTTP</span><strong className="mono">{event.meta_http_status ?? "--"}</strong></div>
               <div><span>Accepted</span><strong className="mono">{event.meta_events_received ?? 0}</strong></div>
             </div>
             {event.meta_trace_id ? <p className="meta-trace"><span>Trace ID</span><code>{event.meta_trace_id}</code></p> : null}
-            <pre className="response-json">{JSON.stringify(event.meta_response, null, 2)}</pre>
+            {event.meta_response ? (
+              <pre className="response-json">{JSON.stringify(event.meta_response, null, 2)}</pre>
+            ) : null}
           </div>
         </dialog>
       ))}
@@ -1251,6 +1270,9 @@ const styles = `
   .log-row { animation: fadeRise 440ms var(--ease) both; }
 
   .meta-dialog { max-width: 700px; }
+  .reason-banner { margin-bottom: 16px; padding: 13px 15px; border-radius: 12px; font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere; border: 1px solid var(--border); }
+  .reason-banner.bad { border-style: dashed; color: var(--ink); background: var(--surface-2); }
+  .reason-banner.ok { background: var(--ink); color: var(--surface); border-color: var(--ink); }
   .meta-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--border); }
   .meta-summary div { display: flex; flex-direction: column; gap: 7px; padding: 14px; background: var(--surface-2); }
   .meta-summary span, .meta-trace span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }

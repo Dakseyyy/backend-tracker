@@ -150,10 +150,12 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
   }
 
   if (configError || !config || !config.active) {
-    await setEventStatus(supabase, eventRecord, "failed");
     const message = configError?.message || (offerId
       ? `No active config found for offer_id ${offerId}.`
       : "No single active offer route is available for this source-only postback.");
+    await setEventStatus(supabase, eventRecord, "failed", {
+      response: { stage: "routing", error: message },
+    });
     console.error(message);
     return { status: "failed", stage: "routing", error: message };
   }
@@ -165,8 +167,10 @@ async function processPostback({ rawQuery, offerId, fbclid, transactionId, arriv
   }
 
   if (!fbclid) {
-    await setEventStatus(supabase, eventRecord, "failed");
-    const message = `Postback for offer_id ${offerId} is missing source/fbclid.`;
+    const message = `Postback for offer_id ${offerId || "(none)"} is missing source/fbclid.`;
+    await setEventStatus(supabase, eventRecord, "failed", {
+      response: { stage: "validation", error: message },
+    });
     console.error(message);
     return { status: "failed", stage: "validation", error: message };
   }
